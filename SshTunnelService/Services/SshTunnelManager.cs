@@ -110,11 +110,22 @@ public class SshTunnelManager : ISshTunnelManager
 
         foreach (var rf in _config.RemoteForwards)
         {
-            var port = new ForwardedPortRemote(rf.BoundHost, rf.BoundPort, rf.TargetHost, rf.TargetPort);
+            // SSH.NET requires empty string (not 0.0.0.0) to bind on all interfaces
+            var boundHost = rf.BoundHost is "0.0.0.0" or "::" or "::0" ? string.Empty : rf.BoundHost;
+            var port = new ForwardedPortRemote(boundHost, rf.BoundPort, rf.TargetHost, rf.TargetPort);
             _sshClient!.AddForwardedPort(port);
             port.Start();
             _forwardedPorts.Add(port);
             _logger.LogAsync("INFO", $"Remote forward: {rf.BoundHost}:{rf.BoundPort} -> {rf.TargetHost}:{rf.TargetPort} ({rf.Name})").Wait();
+        }
+
+        foreach (var df in _config.DynamicForwards)
+        {
+            var port = new ForwardedPortDynamic(df.BoundHost, df.BoundPort);
+            _sshClient!.AddForwardedPort(port);
+            port.Start();
+            _forwardedPorts.Add(port);
+            _logger.LogAsync("INFO", $"Dynamic forward (SOCKS): {df.BoundHost}:{df.BoundPort} ({df.Name})").Wait();
         }
     }
 
@@ -124,7 +135,9 @@ public class SshTunnelManager : ISshTunnelManager
         foreach (var lf in _config.LocalForwards)
             lines.Add($"  [Local]  {lf.BoundHost}:{lf.BoundPort} -> {lf.TargetHost}:{lf.TargetPort} ({lf.Name})");
         foreach (var rf in _config.RemoteForwards)
-            lines.Add($"  [Remote] {rf.BoundHost}:{rf.BoundPort} -> {rf.TargetHost}:{rf.TargetPort} ({rf.Name})");
+            lines.Add($"  [Remote]  {rf.BoundHost}:{rf.BoundPort} -> {rf.TargetHost}:{rf.TargetPort} ({rf.Name})");
+        foreach (var df in _config.DynamicForwards)
+            lines.Add($"  [Dynamic] {df.BoundHost}:{df.BoundPort} SOCKS proxy ({df.Name})");
         return lines.Count > 0 ? string.Join(Environment.NewLine, lines) : "  No port forwards configured.";
     }
 }

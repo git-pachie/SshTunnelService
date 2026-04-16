@@ -12,6 +12,7 @@ public class SshTunnelConfig
     public int MaxReconnectAttempts { get; set; } = 0; // 0 = unlimited
     public List<PortForwardEntry> LocalForwards { get; set; } = [];
     public List<PortForwardEntry> RemoteForwards { get; set; } = [];
+    public List<DynamicForwardEntry> DynamicForwards { get; set; } = [];
 }
 
 public class PortForwardEntry
@@ -21,4 +22,11 @@ public class PortForwardEntry
     public uint BoundPort { get; set; }
     public string TargetHost { get; set; } = "127.0.0.1";
     public uint TargetPort { get; set; }
+}
+
+public class DynamicForwardEntry
+{
+    public string Name { get; set; } = string.Empty;
+    public string BoundHost { get; set; } = "127.0.0.1";
+    public uint BoundPort { get; set; }
 }

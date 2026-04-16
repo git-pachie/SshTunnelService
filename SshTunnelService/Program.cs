@@ -3,8 +3,12 @@ using SshTunnelService.Models;
 using SshTunnelService.Services;
 using SshTunnelService.Services.Interfaces;
 using SshTunnelService.Workers;
+using Microsoft.Extensions.Configuration;
 
 var builder = Host.CreateApplicationBuilder(args);
+
+// Always load user secrets regardless of environment
+builder.Configuration.AddUserSecrets<Program>();
 
 // Bind configuration sections
 builder.Services.Configure<SshTunnelConfig>(builder.Configuration.GetSection("SshTunnel"));
