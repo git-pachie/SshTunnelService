@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
+using SshTunnelService.Helpers;
 using SshTunnelService.Models;
 using SshTunnelService.Services.Interfaces;
 
@@ -53,7 +54,7 @@ public class TunnelWorker : BackgroundService
                     await _logger.LogAsync("WARN", "SSH connection lost. Preparing to reconnect...");
                     await _emailNotifier.SendAsync(
                         "Connection Lost",
-                        $"SSH tunnel connection to {_config.Host}:{_config.Port} was lost. Reconnecting...",
+                        $"SSH tunnel connection to {LogMasker.MaskEndpoint(_config.Host, _config.Port)} was lost. Reconnecting...",
                         stoppingToken);
                 }
             }

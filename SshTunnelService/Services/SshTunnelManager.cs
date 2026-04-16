@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Options;
 using Renci.SshNet;
+using SshTunnelService.Helpers;
 using SshTunnelService.Models;
 using SshTunnelService.Services.Interfaces;
 
@@ -14,6 +15,7 @@ public class SshTunnelManager : ISshTunnelManager
     private readonly List<ForwardedPort> _forwardedPorts = [];
 
     public bool IsConnected => _sshClient?.IsConnected == true;
+    private string MaskedEndpoint => LogMasker.MaskEndpoint(_config.Host, _config.Port);
 
     public SshTunnelManager(
         IOptions<SshTunnelConfig> config,
@@ -30,20 +32,20 @@ public class SshTunnelManager : ISshTunnelManager
         var connectionInfo = BuildConnectionInfo();
         _sshClient = new SshClient(connectionInfo);
 
-        await _logger.LogAsync("INFO", $"Connecting to {_config.Host}:{_config.Port}...");
+        await _logger.LogAsync("INFO", $"Connecting to {MaskedEndpoint}...");
         _sshClient.Connect();
 
         if (!_sshClient.IsConnected)
             throw new InvalidOperationException("SSH connection failed.");
 
-        await _logger.LogAsync("INFO", $"Connected to {_config.Host}:{_config.Port}");
+        await _logger.LogAsync("INFO", $"Connected to {MaskedEndpoint}");
 
         SetupForwards();
 
         var summary = GetForwardSummary();
         await _emailNotifier.SendAsync(
             "Connected",
-            $"SSH tunnel connected to {_config.Host}:{_config.Port}{Environment.NewLine}{summary}",
+            $"SSH tunnel connected to {MaskedEndpoint}{Environment.NewLine}{summary}",
             cancellationToken);
     }
 
@@ -61,7 +63,7 @@ public class SshTunnelManager : ISshTunnelManager
             await _logger.LogAsync("INFO", "SSH tunnel disconnected.");
             await _emailNotifier.SendAsync(
                 "Disconnected",
-                $"SSH tunnel disconnected from {_config.Host}:{_config.Port}");
+                $"SSH tunnel disconnected from {MaskedEndpoint}");
         }
     }
 
@@ -105,7 +107,7 @@ public class SshTunnelManager : ISshTunnelManager
             _sshClient!.AddForwardedPort(port);
             port.Start();
             _forwardedPorts.Add(port);
-            _logger.LogAsync("INFO", $"Local forward: {lf.BoundHost}:{lf.BoundPort} -> {lf.TargetHost}:{lf.TargetPort} ({lf.Name})").Wait();
+            _logger.LogAsync("INFO", $"Local forward: {lf.BoundHost}:{lf.BoundPort} -> ***:*** ({lf.Name})").Wait();
         }
 
         foreach (var rf in _config.RemoteForwards)
@@ -116,7 +118,7 @@ public class SshTunnelManager : ISshTunnelManager
             _sshClient!.AddForwardedPort(port);
             port.Start();
             _forwardedPorts.Add(port);
-            _logger.LogAsync("INFO", $"Remote forward: {rf.BoundHost}:{rf.BoundPort} -> {rf.TargetHost}:{rf.TargetPort} ({rf.Name})").Wait();
+            _logger.LogAsync("INFO", $"Remote forward: ***:*** -> {rf.TargetHost}:{rf.TargetPort} ({rf.Name})").Wait();
         }
 
         foreach (var df in _config.DynamicForwards)
