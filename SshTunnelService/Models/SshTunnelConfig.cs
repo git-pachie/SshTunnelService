@@ -2,6 +2,7 @@ namespace SshTunnelService.Models;
 
 public class SshTunnelConfig
 {
+    public int Id { get; set; }
     public string Host { get; set; } = string.Empty;
     public int Port { get; set; } = 22;
     public string Username { get; set; } = string.Empty;

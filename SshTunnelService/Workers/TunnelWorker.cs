@@ -1,6 +1,5 @@
+using System.Collections.Concurrent;
 using Microsoft.Extensions.Hosting;
-using Microsoft.Extensions.Options;
-using SshTunnelService.Helpers;
 using SshTunnelService.Models;
 using SshTunnelService.Services.Interfaces;
 
@@ -8,53 +7,79 @@ namespace SshTunnelService.Workers;
 
 public class TunnelWorker : BackgroundService
 {
-    private readonly ISshTunnelManager _tunnelManager;
+    private readonly ISshTunnelConfigRepository _configRepository;
+    private readonly ISshTunnelOrchestrator _orchestrator;
     private readonly IFileLogger _logger;
     private readonly IEmailNotifier _emailNotifier;
-    private readonly SshTunnelConfig _config;
+    private readonly ConcurrentDictionary<int, Task> _tunnelTasks = new();
 
     public TunnelWorker(
-        ISshTunnelManager tunnelManager,
+        ISshTunnelConfigRepository configRepository,
+        ISshTunnelOrchestrator orchestrator,
         IFileLogger logger,
-        IEmailNotifier emailNotifier,
-        IOptions<SshTunnelConfig> config)
+        IEmailNotifier emailNotifier)
     {
-        _tunnelManager = tunnelManager;
+        _configRepository = configRepository;
+        _orchestrator = orchestrator;
         _logger = logger;
         _emailNotifier = emailNotifier;
-        _config = config.Value;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         await _logger.LogAsync("INFO", "SSH Tunnel Worker started.");
+
+        var configs = await _configRepository.GetAllActiveConfigsAsync(stoppingToken);
+
+        if (configs.Count == 0)
+        {
+            await _logger.LogAsync("WARN", "No active tunnel configurations found. Worker idle.");
+            return;
+        }
+
+        await _logger.LogAsync("INFO", $"Found {configs.Count} active tunnel(s). Launching...");
+
+        // Spawn an independent reconnect loop per tunnel
+        foreach (var config in configs)
+        {
+            var task = RunTunnelLoopAsync(config, stoppingToken);
+            _tunnelTasks[config.Id] = task;
+        }
+
+        // Wait for all tunnel loops to complete (on cancellation)
+        await Task.WhenAll(_tunnelTasks.Values);
+        await _logger.LogAsync("INFO", "SSH Tunnel Worker stopped.");
+    }
+
+    private async Task RunTunnelLoopAsync(SshTunnelConfig config, CancellationToken stoppingToken)
+    {
+        var tunnelId = config.Id;
         var attempt = 0;
 
         while (!stoppingToken.IsCancellationRequested)
         {
             try
             {
-                if (!_tunnelManager.IsConnected)
+                if (!_orchestrator.IsTunnelConnected(tunnelId))
                 {
                     attempt++;
-                    await _logger.LogAsync("INFO", $"Connection attempt #{attempt}...");
-                    await _tunnelManager.ConnectAsync(stoppingToken);
-                    attempt = 0; // reset on success
+                    await _logger.LogAsync("INFO", $"[Tunnel #{tunnelId}] Connection attempt #{attempt}...");
+                    await _orchestrator.RestartTunnelAsync(tunnelId, stoppingToken);
+                    attempt = 0;
                 }
 
-                // Health-check loop
-                while (_tunnelManager.IsConnected && !stoppingToken.IsCancellationRequested)
+                // Health-check loop for this tunnel
+                while (_orchestrator.IsTunnelConnected(tunnelId) && !stoppingToken.IsCancellationRequested)
                 {
                     await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
                 }
 
-                // If we exit the inner loop, connection was lost
                 if (!stoppingToken.IsCancellationRequested)
                 {
-                    await _logger.LogAsync("WARN", "SSH connection lost. Preparing to reconnect...");
+                    await _logger.LogAsync("WARN", $"[Tunnel #{tunnelId}] Connection lost. Preparing to reconnect...");
                     await _emailNotifier.SendAsync(
-                        "Connection Lost",
-                        $"SSH tunnel connection to {LogMasker.MaskEndpoint(_config.Host, _config.Port)} was lost. Reconnecting...",
+                        $"Tunnel #{tunnelId} Connection Lost",
+                        $"SSH tunnel #{tunnelId} connection was lost. Reconnecting...",
                         stoppingToken);
                 }
             }
@@ -64,14 +89,14 @@ public class TunnelWorker : BackgroundService
             }
             catch (Exception ex)
             {
-                await _logger.LogAsync("ERROR", $"Connection attempt #{attempt} failed.", ex);
+                await _logger.LogAsync("ERROR", $"[Tunnel #{tunnelId}] Attempt #{attempt} failed.", ex);
 
-                if (_config.MaxReconnectAttempts > 0 && attempt >= _config.MaxReconnectAttempts)
+                if (config.MaxReconnectAttempts > 0 && attempt >= config.MaxReconnectAttempts)
                 {
-                    await _logger.LogAsync("FATAL", $"Max reconnect attempts ({_config.MaxReconnectAttempts}) reached. Stopping.");
+                    await _logger.LogAsync("FATAL", $"[Tunnel #{tunnelId}] Max reconnect attempts ({config.MaxReconnectAttempts}) reached.");
                     await _emailNotifier.SendAsync(
-                        "Max Reconnect Attempts Reached",
-                        $"Failed to reconnect after {_config.MaxReconnectAttempts} attempts. Service stopping.",
+                        $"Tunnel #{tunnelId} Max Attempts Reached",
+                        $"Tunnel #{tunnelId} failed after {config.MaxReconnectAttempts} attempts. Giving up.",
                         stoppingToken);
                     break;
                 }
@@ -79,18 +104,16 @@ public class TunnelWorker : BackgroundService
 
             if (!stoppingToken.IsCancellationRequested)
             {
-                await _logger.LogAsync("INFO", $"Waiting {_config.ReconnectDelaySeconds}s before reconnect...");
-                await Task.Delay(TimeSpan.FromSeconds(_config.ReconnectDelaySeconds), stoppingToken);
+                await _logger.LogAsync("INFO", $"[Tunnel #{tunnelId}] Waiting {config.ReconnectDelaySeconds}s before reconnect...");
+                await Task.Delay(TimeSpan.FromSeconds(config.ReconnectDelaySeconds), stoppingToken);
             }
         }
-
-        await _tunnelManager.DisconnectAsync();
-        await _logger.LogAsync("INFO", "SSH Tunnel Worker stopped.");
     }
 
     public override async Task StopAsync(CancellationToken cancellationToken)
     {
         await _logger.LogAsync("INFO", "SSH Tunnel Worker stopping...");
+        await _orchestrator.StopAllAsync();
         await base.StopAsync(cancellationToken);
     }
 }
